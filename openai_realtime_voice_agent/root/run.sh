@@ -3,6 +3,7 @@ set -e
 
 # Get configuration
 OPENAI_API_KEY=$(bashio::config 'openai_api_key')
+OPENAI_MODEL_NAME=$(bashio::config 'openai_model_name')
 WEBSOCKET_PORT=$(bashio::config 'websocket_port')
 HA_MCP_URL=$(bashio::config 'ha_mcp_url')
 LONGLIVED_TOKEN=$(bashio::config 'longlived_token')

@@ -12,6 +12,7 @@ boot: auto
 host_network: true
 options:
   openai_api_key: ""
+  openai_model_name: "gpt-realtime-mini"
   websocket_port: 8080
   ha_mcp_url: ""
   longlived_token: ""
@@ -27,6 +28,7 @@ options:
   enable_recording: false
 schema:
   openai_api_key: password
+  openai_model_name: str
   websocket_port: int(1024,65535)
   ha_mcp_url: str
   longlived_token: password
