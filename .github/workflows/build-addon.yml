@@ -1,62 +1,88 @@
-name: Build and Publish Home Assistant Addon
+name: Build & Publish Home Assistant Add-on
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
     paths:
-      - 'openai_realtime_voice_agent/**'
-      - '.github/workflows/build-addon.yml'
+      - "openai_realtime_voice_agent/**"
+      - ".github/workflows/build-addon.yml"
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
     paths:
-      - 'openai_realtime_voice_agent/**'
+      - "openai_realtime_voice_agent/**"
   release:
-    types: [published]
+    types: [ published ]
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/openai-realtime-voice-agent
+  ADDON_DIR: openai_realtime_voice_agent
+  IMAGE_BASE: openai-realtime-voice-agent
 
 jobs:
   build:
-    name: Build for ${{ matrix.arch }}
+    name: Build (${{ matrix.arch }})
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
-    
+
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - aarch64
-          - amd64
-    
+        arch: [ aarch64, amd64 ]
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract version from config.yaml
-        id: version
+      # Docker/OCI image repository names must be lowercase. GitHub usernames/repos can be mixed-case.
+      - name: Compute lowercase image repo
         run: |
-          VERSION=$(grep '^version:' openai_realtime_voice_agent/config.yaml | sed 's/version: "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
+          echo "IMAGE_REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_FULL=${{ env.REGISTRY }}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Extract add-on version from config.yaml
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="${{ env.ADDON_DIR }}/config.yaml"
+
+          # Accept: version: "0.1.0-p1"  OR  version: 0.1.0-p1
+          VERSION="$(grep -E '^[[:space:]]*version:[[:space:]]*' "$CFG" \
+            | head -n1 \
+            | sed -E 's/^[[:space:]]*version:[[:space:]]*//; s/^"//; s/"$//; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "Failed to parse version from $CFG" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using version: $VERSION"
+
+      - name: Map architecture -> platform
+        id: arch_map
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            aarch64) echo "platform=linux/arm64" >> "$GITHUB_OUTPUT" ;;
+            amd64)   echo "platform=linux/amd64" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unknown arch: ${{ matrix.arch }}" >&2; exit 1 ;;
+          esac
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: linux/arm64,linux/amd64
+          platforms: all
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Login to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
@@ -64,35 +90,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Map architecture
-        id: arch-map
-        run: |
-          case "${{ matrix.arch }}" in
-            aarch64)
-              echo "platform=linux/arm64" >> $GITHUB_OUTPUT
-              ;;
-            amd64)
-              echo "platform=linux/amd64" >> $GITHUB_OUTPUT
-              ;;
-          esac
-
-      - name: Build and push Docker image
+      - name: Build (and push when applicable)
         uses: docker/build-push-action@v5
         with:
-          context: ./openai_realtime_voice_agent
-          file: ./openai_realtime_voice_agent/Dockerfile
-          platforms: ${{ steps.arch-map.outputs.platform }}
+          context: ./${{ env.ADDON_DIR }}
+          file: ./${{ env.ADDON_DIR }}/Dockerfile
+          platforms: ${{ steps.arch_map.outputs.platform }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.arch }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.IMAGE_FULL }}/${{ env.IMAGE_BASE }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_FULL }}/${{ env.IMAGE_BASE }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}-${{ github.sha }}
+            ${{ env.IMAGE_FULL }}/${{ env.IMAGE_BASE }}-${{ matrix.arch }}:latest
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
           build-args: |
             BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base:latest
 
-      - name: Generate image manifest
-        if: github.event_name != 'pull_request' && matrix.arch == 'amd64'
+      - name: Print image names
+        if: github.event_name != 'pull_request'
         run: |
-          echo "Image built: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}"
+          echo "Pushed:"
+          echo "  ${{ env.IMAGE_FULL }}/${{ env.IMAGE_BASE }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}"
+          echo "  ${{ env.IMAGE_FULL }}/${{ env.IMAGE_BASE }}-${{ matrix.arch }}:${{ steps.version.outputs.version }}-${{ github.sha }}"
+          echo "  ${{ env.IMAGE_FULL }}/${{ env.IMAGE_BASE }}-${{ matrix.arch }}:latest"
